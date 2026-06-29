@@ -301,6 +301,35 @@ def create_tools_metadata(d):
             ]
         }
 
+def create_image_metadata_component(d):
+    """
+    Create the top-level image component for CycloneDX metadata.
+
+    This identifies the built image itself (name/version/machine),
+    separate from package components listed under "components".
+    """
+    image_name = d.getVar("IMAGE_BASENAME") or d.getVar("PN") or "image"
+    machine = d.getVar("MACHINE") or "unknown-machine"
+    version = d.getVar("IMAGE_VERSION") or d.getVar("PV") or "unknown"
+
+    component = {
+        "type": "application",
+        "name": f"{image_name}-{machine}",
+        "version": version,
+        "bom-ref": f"image:{image_name}:{machine}:{version}",
+    }
+
+    image_link_name = d.getVar("IMAGE_LINK_NAME")
+    if image_link_name:
+        component["properties"] = [
+            {
+                "name": "yocto:image_link_name",
+                "value": image_link_name
+            }
+        ]
+
+    return component
+
 def get_recipe_dependencies(d):
     """
     Return recipe names which depend on the current one.
@@ -531,6 +560,7 @@ def export_cyclonedx(d):
         "version": 1,
         "metadata": {
             "timestamp": timestamp,
+            "component": create_image_metadata_component(d),
             "tools": create_tools_metadata(d)
         },
         "components": [],
@@ -606,7 +636,7 @@ def export_cyclonedx(d):
             if pkg not in alias_map:
                 alias_map[pkg] = pn_pkg["name"]
 
-    for pkg in recipes:
+    for pkg in pn_lists:
         pn_list = copy.deepcopy(pn_lists[pkg])
 
         for pn_pkg in pn_list["pkgs"]:
@@ -626,7 +656,7 @@ def export_cyclonedx(d):
             vex["vulnerabilities"].append(pn_cve)
 
         # Add dependencies
-    for pkg in recipes:
+    for pkg in pn_lists:
         pn_list = copy.deepcopy(pn_lists[pkg])
 
         deps = pn_list.get("dependencies")
@@ -688,6 +718,11 @@ def export_cyclonedx(d):
         shutil.rmtree(tmp_export_dir)
     bb.utils.mkdirhier(tmp_export_dir)
 
+    # Always deploy directly to the final export directory.
+    # For image recipes (called via ROOTFS_POSTUNINSTALL_COMMAND), this ensures
+    # the SBOM/VEX appear in DEPLOY_DIR without depending on the sstate deploy task.
+    bb.utils.mkdirhier(export_dir)
+
     def get_cyclonedx_export_path(path_variable_name, required=False):
         path = d.getVar(path_variable_name)
         if not path:
@@ -710,6 +745,16 @@ def export_cyclonedx(d):
     write_json(export_sbom, sbom)
     write_json(export_vex, vex)
 
+    # Copy directly to the final deploy directory
+    import shutil
+    for src_path in [export_sbom, export_vex]:
+        if src_path and os.path.exists(src_path):
+            rel_path = os.path.relpath(src_path, tmp_export_dir)
+            dst_path = os.path.join(export_dir, rel_path)
+            bb.utils.mkdirhier(os.path.dirname(dst_path))
+            shutil.copy2(src_path, dst_path)
+            bb.note(f"CycloneDX: deployed {rel_path} to {export_dir}")
+
     def make_deploy_symlink(target, link_name):
         if link_name and target != link_name:
             target = Path(target).relative_to(os.path.dirname(link_name))
@@ -729,7 +774,7 @@ ROOTFS_POSTUNINSTALL_COMMAND =+ "do_export_cyclonedx; "
 SSTATETASKS += "do_deploy_cyclonedx"
 do_deploy_cyclonedx[sstate-inputdirs] = "${CYCLONEDX_TMP_EXPORT_DIR}"
 do_deploy_cyclonedx[sstate-outputdirs] = "${CYCLONEDX_EXPORT_DIR}"
-do_deploy_cyclonedx[vardeps] += "CYCLONEDX_EXPORT_DIR"
+do_deploy_cyclonedx[vardeps] += "CYCLONEDX_EXPORT_DIR CYCLONEDX_EXPORT_SBOM CYCLONEDX_EXPORT_VEX CYCLONEDX_SPEC_VERSION"
 python do_deploy_cyclonedx_setscene() {
     sstate_setscene(d)
 }
