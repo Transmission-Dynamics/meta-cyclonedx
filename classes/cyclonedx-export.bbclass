@@ -617,7 +617,7 @@ def export_cyclonedx(d):
             if os.path.exists(pn_list_filepath):
                 break
         if not os.path.exists(pn_list_filepath):
-            bb.info(f"CycloneDX PN file not found: {pkg}.json")
+            bb.note(f"CycloneDX PN file not found: {pkg}.json")
             continue
         pn_lists[pkg] = read_json(pn_list_filepath)
         pn_list = copy.deepcopy(pn_lists[pkg])
